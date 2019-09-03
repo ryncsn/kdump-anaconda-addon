@@ -34,7 +34,31 @@ from com_redhat_kdump.common import getMemoryBounds
 from com_redhat_kdump.i18n import _
 from com_redhat_kdump.constants import FADUMP_CAPABLE_FILE
 
+
 __all__ = ["KdumpData"]
+
+
+def get_size_type(name):
+    # Generate a validator for the *-mb argument
+    # Allow a final 'M' for consistency with the crashkernel kernel
+    # parameter. Strip it if found. And strip quotes.
+    def size_in_mb(arg):
+        arg = arg.strip("'\"")
+        if arg and arg[-1] == 'M':
+            arg = arg[:-1]
+
+        try:
+            value = int(arg)
+        except ValueError:
+            msg = _("Invalid value %s for %s") % (arg, name)
+            if lineno != None:
+                raise KickstartParseError(formatErrorMsg(lineno, msg=msg))
+            else:
+                raise KickstartParseError(msg)
+        return value
+
+    return size_in_mb
+
 
 class KdumpData(AddonData):
     """Addon data for the kdump configuration"""
@@ -46,6 +70,7 @@ class KdumpData(AddonData):
         lower, upper, step = getMemoryBounds()
         self.reserveMB = "%d" % lower
         self.enablefadump = False
+        self.offset = None
 
     def __str__(self):
         addon_str = "%%addon %s" % self.name
@@ -57,6 +82,9 @@ class KdumpData(AddonData):
 
         if self.reserveMB:
             addon_str += " --reserve-mb='%s'" % self.reserveMB
+
+        if self.offsetMB:
+            addon_str += " --offset-mb='%s'" % self.offsetMB
 
         if self.enablefadump:
             addon_str += " --enablefadump"
@@ -93,7 +121,10 @@ class KdumpData(AddonData):
             storage.bootloader.boot_args -= set(crashargs)
 
         if self.enabled:
-            storage.bootloader.boot_args.add('crashkernel=%s' % self.reserveMB)
+            if (self.offsetMB):
+                storage.bootloader.boot_args.add('crashkernel=%s@%s' % (self.reserveMB, self.offsetMB))
+            else:
+                storage.bootloader.boot_args.add('crashkernel=%s' % self.reserveMB)
             ksdata.packages.packageList.append("kexec-tools")
         if self.enablefadump and os.path.exists(FADUMP_CAPABLE_FILE):
                 storage.bootloader.boot_args.add('fadump=on')
@@ -107,8 +138,11 @@ class KdumpData(AddonData):
                 version=F27, dest="enablefadump", help="Enable dump mode fadump")
         op.add_argument("--disable", action="store_false",
                 version=F27, dest="enabled", help="Disable kdump")
-        op.add_argument("--reserve-mb", type=str, dest="reserveMB",
+        op.add_argument("--reserve-mb", type=get_size_type("--reserve-mb"), dest="reserveMB",
                 version=F27, default="128", help="Amount of memory in MB to reserve for kdump.")
+        op.add_argument("--offset-mb", type=get_size_type("--offset-mb"), dest="offsetMB",
+                version=F27, help="Offset of where to reserve memory for kdump, if not specified"
+                                  "kernel will find the usable memory region automatically.")
 
         (opts, extra) = op.parse_known_args(args=args, lineno=lineno)
 
@@ -116,25 +150,10 @@ class KdumpData(AddonData):
         if extra:
             AddonData.handle_header(self, lineno, extra)
 
-        # Validate the reserve-mb argument
-        # Allow a final 'M' for consistency with the crashkernel kernel
-        # parameter. Strip it if found. And strip quotes.
-        opts.reserveMB = opts.reserveMB.strip("'\"")
-        if opts.reserveMB and opts.reserveMB[-1] == 'M':
-            opts.reserveMB = opts.reserveMB[:-1]
-
-        try:
-            _test = int(opts.reserveMB)
-        except ValueError:
-            msg = _("Invalid value %s for --reserve-mb") % opts.reserveMB
-            if lineno != None:
-                raise KickstartParseError(formatErrorMsg(lineno, msg=msg))
-            else:
-                raise KickstartParseError(msg)
-
         # Store the parsed arguments
         self.enabled = opts.enabled
         self.reserveMB = opts.reserveMB
+        self.offsetMB = opts.offsetMB
         self.enablefadump = opts.enablefadump
 
     def execute(self, storage, ksdata, users, payload):
